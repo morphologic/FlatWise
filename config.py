@@ -15,7 +15,7 @@ class Settings:
     nanobanana_model: str = os.getenv("NANOBANANA_MODEL", "google/gemini-2.5-flash-image")
     google_maps_api_key: str | None = os.getenv("GOOGLE_MAPS_API_KEY")
     app_url: str = os.getenv("APP_URL", "http://127.0.0.1:8001")
-    app_name: str = os.getenv("APP_NAME", "grasshopper_hackathon")
+    app_name: str = os.getenv("APP_NAME", "FlatWise")
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "18"))
     max_upload_bytes: int = int(os.getenv("MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
 

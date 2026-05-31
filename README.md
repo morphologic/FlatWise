@@ -1,4 +1,4 @@
-# grasshopper_hackathon
+# FlatWise
 
 FlatWise is a local web app that helps Polish buyers evaluate developer flat listings. Paste a listing URL, optionally upload a floor plan, and receive a structured skeptical buyer report powered by OpenRouter, with geospatial context from Polish Geoportal services.
 
