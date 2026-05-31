@@ -1,0 +1,309 @@
+{
+  "flow_id": "apartment-buyer-onboarding-v1",
+  "locale": "pl-PL",
+  "goal": "Zebranie preferencji kupującego mieszkanie i zbudowanie profilu do dopasowania ofert oraz analizy inwestycji.",
+  "ui_rules": {
+    "one_question_per_card": true,
+    "max_options_per_card": 6,
+    "allow_skip_on_non_critical_cards": true,
+    "show_progress_bar": true,
+    "primary_cta_label": "Dalej",
+    "secondary_cta_label": "Pomiń",
+    "selection_style": "cards",
+    "input_style": "single_select_by_default",
+    "notes": [
+      "Pytania krytyczne nie powinny być pomijane: budżet, lokalizacja, liczba pokoi lub metraż.",
+      "Karty warunkowe pokazuj tylko wtedy, gdy wynikają z wcześniejszych odpowiedzi.",
+      "Po każdej odpowiedzi aktualizuj buyer_profile i buyer_preferences."
+    ]
+  },
+  "data_model": {
+    "buyer_profile": {
+      "purchase_type": "primary_home | investment | undecided",
+      "household_type": "single | couple | family_2_1 | family_2_2_plus | single_parent | investor",
+      "household_size": "integer | null",
+      "budget_min_pln": "number | null",
+      "budget_max_pln": "number | null",
+      "preferred_city": "string | null",
+      "preferred_districts": "string[]",
+      "location_mode": "districts | commute | map_area",
+      "rooms_min": "integer | null",
+      "area_min_m2": "number | null",
+      "area_max_m2": "number | null",
+      "priority_primary": "price | location | standard | area | quiet | investment_potential",
+      "lifestyle_modes": "string[]",
+      "must_haves": "string[]",
+      "future_horizon": "short_term_1_3y | medium_term_3_7y | long_term_7y_plus | undecided",
+      "work_from_home": "never | sometimes | often | daily | null",
+      "needs_extra_room": "boolean | null",
+      "has_car": "boolean | null",
+      "has_child": "boolean | null",
+      "wants_school_nearby": "boolean | null",
+      "investment_focus": "yield | appreciation | liquidity | own_use_later | null"
+    }
+  },
+  "cards": [
+    {
+      "id": "purchase_type",
+      "type": "single_select",
+      "required": true,
+      "title": "Po co kupujesz mieszkanie?",
+      "subtitle": "To pomoże dobrać oferty do Twojego celu.",
+      "options": [
+        { "id": "primary_home", "label": "Dla siebie" },
+        { "id": "investment", "label": "Inwestycyjnie" },
+        { "id": "undecided", "label": "Jeszcze nie wiem" }
+      ],
+      "maps_to": "buyer_profile.purchase_type"
+    },
+    {
+      "id": "household_type",
+      "type": "single_select",
+      "required": true,
+      "title": "Kto będzie mieszkać w tym mieszkaniu?",
+      "subtitle": "Od tego zależą układ, liczba pokoi i codzienny komfort.",
+      "options": [
+        { "id": "single", "label": "Mieszkam sam" },
+        { "id": "couple", "label": "Jesteśmy parą" },
+        { "id": "family_2_1", "label": "Rodzina 2+1" },
+        { "id": "family_2_2_plus", "label": "Rodzina 2+2 lub większa" },
+        { "id": "single_parent", "label": "Samotny rodzic z dzieckiem" },
+        { "id": "investor", "label": "Kupuję jako inwestycję" }
+      ],
+      "maps_to": "buyer_profile.household_type"
+    },
+    {
+      "id": "budget",
+      "type": "range_with_presets",
+      "required": true,
+      "title": "Jaki masz budżet?",
+      "subtitle": "Możesz wybrać zakres albo wpisać własną kwotę.",
+      "presets": [
+        { "label": "Do 500 tys. zł", "min": 0, "max": 500000 },
+        { "label": "500–700 tys. zł", "min": 500000, "max": 700000 },
+        { "label": "700–900 tys. zł", "min": 700000, "max": 900000 },
+        { "label": "900 tys.–1,2 mln zł", "min": 900000, "max": 1200000 },
+        { "label": "1,2–1,8 mln zł", "min": 1200000, "max": 1800000 },
+        { "label": "Powyżej 1,8 mln zł", "min": 1800000, "max": null }
+      ],
+      "allow_custom_input": true,
+      "maps_to": ["buyer_profile.budget_min_pln", "buyer_profile.budget_max_pln"]
+    },
+    {
+      "id": "location",
+      "type": "location_select",
+      "required": true,
+      "title": "Gdzie chcesz kupić mieszkanie?",
+      "subtitle": "Wybierz miasto i dzielnice albo zaznacz obszar na mapie.",
+      "modes": [
+        { "id": "districts", "label": "Wybiorę dzielnice" },
+        { "id": "commute", "label": "Pokaż okolice z dobrym dojazdem" },
+        { "id": "map_area", "label": "Zaznaczę obszar na mapie" }
+      ],
+      "maps_to": ["buyer_profile.preferred_city", "buyer_profile.preferred_districts", "buyer_profile.location_mode"]
+    },
+    {
+      "id": "rooms",
+      "type": "single_select",
+      "required": true,
+      "title": "Ile pokoi potrzebujesz?",
+      "subtitle": "Wybierz minimum, które ma sens na co dzień.",
+      "options": [
+        { "id": "1", "label": "1 pokój" },
+        { "id": "2", "label": "2 pokoje" },
+        { "id": "3", "label": "3 pokoje" },
+        { "id": "4", "label": "4 pokoje" },
+        { "id": "5", "label": "5+ pokoi" }
+      ],
+      "maps_to": "buyer_profile.rooms_min"
+    },
+    {
+      "id": "area",
+      "type": "single_select",
+      "required": true,
+      "title": "Jakiego metrażu szukasz?",
+      "subtitle": "Wybierz zakres, który będzie dla Ciebie komfortowy.",
+      "options": [
+        { "id": "0_35", "label": "Do 35 m²", "min": 0, "max": 35 },
+        { "id": "35_50", "label": "35–50 m²", "min": 35, "max": 50 },
+        { "id": "50_65", "label": "50–65 m²", "min": 50, "max": 65 },
+        { "id": "65_80", "label": "65–80 m²", "min": 65, "max": 80 },
+        { "id": "80_100", "label": "80–100 m²", "min": 80, "max": 100 },
+        { "id": "100_plus", "label": "100+ m²", "min": 100, "max": null }
+      ],
+      "maps_to": ["buyer_profile.area_min_m2", "buyer_profile.area_max_m2"]
+    },
+    {
+      "id": "priority_primary",
+      "type": "single_select",
+      "required": true,
+      "title": "Co jest dla Ciebie najważniejsze?",
+      "subtitle": "Na tej podstawie agent ustawi wagę rekomendacji.",
+      "options": [
+        { "id": "price", "label": "Cena" },
+        { "id": "location", "label": "Lokalizacja" },
+        { "id": "standard", "label": "Standard" },
+        { "id": "area", "label": "Metraż" },
+        { "id": "quiet", "label": "Spokój" },
+        { "id": "investment_potential", "label": "Potencjał inwestycyjny" }
+      ],
+      "maps_to": "buyer_profile.priority_primary"
+    },
+    {
+      "id": "lifestyle",
+      "type": "multi_select",
+      "required": false,
+      "title": "Jak chcesz mieszkać na co dzień?",
+      "subtitle": "Możesz zaznaczyć kilka odpowiedzi.",
+      "max_selected": 3,
+      "options": [
+        { "id": "close_to_center", "label": "Blisko centrum" },
+        { "id": "quiet_area", "label": "W spokojnej okolicy" },
+        { "id": "close_to_greenery", "label": "Blisko zieleni" },
+        { "id": "good_public_transport", "label": "Z dobrym transportem publicznym" },
+        { "id": "walkable_services", "label": "Blisko sklepów i usług" },
+        { "id": "new_building", "label": "W nowym budynku" }
+      ],
+      "maps_to": "buyer_profile.lifestyle_modes"
+    },
+    {
+      "id": "must_haves",
+      "type": "multi_select",
+      "required": false,
+      "title": "Co musi się zgadzać?",
+      "subtitle": "Zaznacz elementy, bez których nie chcesz oglądać ofert.",
+      "options": [
+        { "id": "balcony", "label": "Balkon" },
+        { "id": "terrace", "label": "Taras lub ogródek" },
+        { "id": "elevator", "label": "Winda" },
+        { "id": "parking", "label": "Miejsce parkingowe" },
+        { "id": "storage", "label": "Komórka lokatorska" },
+        { "id": "separate_kitchen", "label": "Oddzielna kuchnia" },
+        { "id": "furnished_or_ready", "label": "Gotowe do zamieszkania" }
+      ],
+      "maps_to": "buyer_profile.must_haves"
+    },
+    {
+      "id": "future_horizon",
+      "type": "single_select",
+      "required": false,
+      "title": "Na jak długo kupujesz to mieszkanie?",
+      "subtitle": "To pomaga odróżnić potrzeby na dziś od potrzeb na kilka lat.",
+      "options": [
+        { "id": "short_term_1_3y", "label": "Na 1–3 lata" },
+        { "id": "medium_term_3_7y", "label": "Na 3–7 lat" },
+        { "id": "long_term_7y_plus", "label": "Na długo, 7+ lat" },
+        { "id": "undecided", "label": "Jeszcze nie wiem" }
+      ],
+      "maps_to": "buyer_profile.future_horizon"
+    }
+  ],
+  "conditional_cards": [
+    {
+      "id": "work_from_home",
+      "show_if": {
+        "any": [
+          { "field": "buyer_profile.household_type", "in": ["single", "couple", "family_2_1", "family_2_2_plus", "single_parent"] },
+          { "field": "buyer_profile.purchase_type", "equals": "primary_home" }
+        ]
+      },
+      "type": "single_select",
+      "title": "Jak często pracujesz z domu?",
+      "options": [
+        { "id": "never", "label": "Nigdy" },
+        { "id": "sometimes", "label": "Czasami" },
+        { "id": "often", "label": "Kilka dni w tygodniu" },
+        { "id": "daily", "label": "Codziennie" }
+      ],
+      "maps_to": "buyer_profile.work_from_home"
+    },
+    {
+      "id": "extra_room",
+      "show_if": {
+        "any": [
+          { "field": "buyer_profile.work_from_home", "in": ["often", "daily"] },
+          { "field": "buyer_profile.household_type", "in": ["family_2_1", "family_2_2_plus", "single_parent"] }
+        ]
+      },
+      "type": "single_select",
+      "title": "Czy potrzebujesz dodatkowego pokoju lub wydzielonej strefy?",
+      "options": [
+        { "id": "yes", "label": "Tak" },
+        { "id": "no", "label": "Nie" }
+      ],
+      "maps_to": "buyer_profile.needs_extra_room"
+    },
+    {
+      "id": "car",
+      "show_if": {
+        "field": "buyer_profile.purchase_type",
+        "in": ["primary_home", "undecided"]
+      },
+      "type": "single_select",
+      "title": "Czy potrzebujesz miejsca dla auta?",
+      "options": [
+        { "id": "yes", "label": "Tak" },
+        { "id": "no", "label": "Nie" }
+      ],
+      "maps_to": "buyer_profile.has_car"
+    },
+    {
+      "id": "school_nearby",
+      "show_if": {
+        "field": "buyer_profile.household_type",
+        "in": ["family_2_1", "family_2_2_plus", "single_parent"]
+      },
+      "type": "single_select",
+      "title": "Czy ważna jest bliskość szkoły lub przedszkola?",
+      "options": [
+        { "id": "yes", "label": "Tak" },
+        { "id": "no", "label": "Nie" }
+      ],
+      "maps_to": "buyer_profile.wants_school_nearby"
+    },
+    {
+      "id": "investment_focus",
+      "show_if": {
+        "field": "buyer_profile.purchase_type",
+        "equals": "investment"
+      },
+      "type": "single_select",
+      "title": "Co jest najważniejsze w inwestycji?",
+      "options": [
+        { "id": "yield", "label": "Dochód z najmu" },
+        { "id": "appreciation", "label": "Wzrost wartości" },
+        { "id": "liquidity", "label": "Łatwa odsprzedaż" },
+        { "id": "own_use_later", "label": "Możliwość zamieszkania później" }
+      ],
+      "maps_to": "buyer_profile.investment_focus"
+    }
+  ],
+  "scoring_rules": {
+    "hard_filters": [
+      "budget_max_pln",
+      "preferred_city",
+      "rooms_min",
+      "area_min_m2"
+    ],
+    "soft_weights": {
+      "priority_primary": 0.35,
+      "lifestyle_modes": 0.20,
+      "must_haves": 0.25,
+      "future_horizon": 0.10,
+      "conditional_signals": 0.10
+    },
+    "examples": [
+      "Jeśli household_type = family_2_1, podbij score dla 3 pokoi i windy.",
+      "Jeśli work_from_home = daily, podbij score dla dodatkowego pokoju i ciszy.",
+      "Jeśli investment_focus = yield, podbij score dla mniejszych lokali w lepszej lokalizacji."
+    ]
+  },
+  "output_contract": {
+    "after_onboarding": {
+      "summary_text": "Krótki opis potrzeb użytkownika po zakończeniu onboardingu.",
+      "search_filters": "Gotowe filtry do wyszukiwarki ofert.",
+      "ranking_profile": "Wagi do rankingu mieszkań.",
+      "follow_up_questions": "Lista maks. 3 dodatkowych pytań, jeśli profil nadal jest niejednoznaczny."
+    }
+  }
+}
