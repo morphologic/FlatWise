@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>grasshopper_hackathon</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <section class="intro-band">
+          <div>
+            <p class="eyebrow">FlatWise</p>
+            <h1>Krótka rozmowa przed analizą mieszkania</h1>
+          </div>
+          <p>
+            Chat zada 2 lub 3 pytania, zbierze link, rzut i Twoje priorytety, a potem przygotuje dane do raportu.
+          </p>
+        </section>
+
+        <section class="analysis-grid">
+          <section class="panel chat-panel" aria-label="Rozmowa z asystentem">
+            <div class="chat-header">
+              <div>
+                <p class="eyebrow">Chat</p>
+                <h2>Asystent kupującego</h2>
+              </div>
+              <span id="step-pill" class="step-pill">Start</span>
+            </div>
+
+            <div id="chat-log" class="chat-log" aria-live="polite"></div>
+
+            <div id="file-question" class="file-question hidden">
+              <label class="file-picker">
+                <span>Dodaj rzut mieszkania</span>
+                <input id="floor-plan-input" type="file" accept="image/*,.pdf" />
+              </label>
+              <button id="skip-file-button" class="button secondary" type="button">Nie mam rzutu</button>
+            </div>
+
+            <form id="chat-form" class="chat-form">
+              <label class="sr-only" for="chat-input">Twoja odpowiedź</label>
+              <textarea
+                id="chat-input"
+                rows="2"
+                placeholder="Napisz odpowiedź..."
+                autocomplete="off"
+              ></textarea>
+              <button id="send-button" class="button primary" type="submit">Wyślij</button>
+            </form>
+          </section>
+
+          <aside class="side-column">
+            <section class="panel inputs-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Dane</p>
+                  <h2>Wejście do analizy</h2>
+                </div>
+                <button id="reset-button" class="icon-button" type="button" aria-label="Zacznij od nowa" title="Zacznij od nowa">↺</button>
+              </div>
+
+              <dl id="input-summary" class="input-summary"></dl>
+              <button id="analyze-button" class="button primary" type="button" disabled>Analizuj mieszkanie</button>
+              <p id="status-text" class="status-text">Odpowiedz na pytania w czacie, żeby uruchomić analizę.</p>
+            </section>
+
+            <section id="report-panel" class="panel report-panel hidden">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Raport</p>
+                  <h2>Wynik analizy</h2>
+                </div>
+              </div>
+              <div id="report-root" class="report-root"></div>
+            </section>
+          </aside>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
