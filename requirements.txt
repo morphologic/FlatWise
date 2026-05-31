@@ -1,0 +1,10 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+python-dotenv==1.2.2
+httpx==0.28.1
+beautifulsoup4==4.12.3
+pypdf==5.1.0
+pymupdf==1.27.2.3
+pillow==11.0.0
+pyproj==3.7.0
