@@ -176,7 +176,7 @@ async function analyzeFlat() {
     }
 
     addBotMessage("Analiza gotowa. Raport pojawił się po prawej stronie.");
-    renderReport(payload.report, payload.visualization, payload.geo_context);
+    renderReport(payload.report, payload.visualization, payload.geo_context, payload.floor_plan_analysis);
     elements.reportPanel.classList.remove("hidden");
   } catch (error) {
     addBotMessage(`Nie udało się wykonać analizy: ${error.message}`);
@@ -276,9 +276,10 @@ function renderInputs() {
   }
 }
 
-function renderReport(report, visualization = {}, geoContext = {}) {
+function renderReport(report, visualization = {}, geoContext = {}, floorPlanAnalysis = {}) {
   elements.reportRoot.innerHTML = `
     ${renderVisualization(visualization)}
+    ${renderFloorPlanAnalysis(floorPlanAnalysis)}
 
     ${renderCollapsibleSegment(
       "Rekomendacja",
@@ -315,6 +316,74 @@ function renderReport(report, visualization = {}, geoContext = {}) {
     ${renderInfographics(report, geoContext)}
     ${report.raw_response ? `<pre>${escapeHtml(report.raw_response)}</pre>` : ""}
   `;
+}
+
+function renderFloorPlanAnalysis(data = {}) {
+  if (!data || data.status !== "ready") return "";
+
+  const wallSummary = data.wall_run_summary || {};
+  const rooms = data.room_candidates || [];
+  return renderCollapsibleSegment(
+    "Structured floor-plan scan",
+    `
+      <div class="geo-grid">
+        <div>
+          <h4>Estimated spaces</h4>
+          <p>${escapeHtml(data.estimated_room_like_spaces ?? 0)}</p>
+        </div>
+        <div>
+          <h4>Elongated spaces</h4>
+          <p>${escapeHtml(data.elongated_space_count ?? 0)}</p>
+        </div>
+        <div>
+          <h4>Ink ratio</h4>
+          <p>${escapeHtml(Math.round((Number(data.ink_ratio) || 0) * 1000) / 10)}%</p>
+        </div>
+      </div>
+
+      <div class="geo-section">
+        <h4>Wall-line signal</h4>
+        <div class="buffer-list">
+          <div><strong>${escapeHtml(wallSummary.horizontal_long_runs ?? 0)}</strong><span>horizontal runs</span></div>
+          <div><strong>${escapeHtml(wallSummary.vertical_long_runs ?? 0)}</strong><span>vertical runs</span></div>
+          <div><strong>${escapeHtml(wallSummary.longest_horizontal_ratio ?? 0)}</strong><span>longest horizontal ratio</span></div>
+          <div><strong>${escapeHtml(wallSummary.longest_vertical_ratio ?? 0)}</strong><span>longest vertical ratio</span></div>
+        </div>
+      </div>
+
+      ${
+        rooms.length
+          ? `
+            <div class="geo-section">
+              <h4>Largest room-like regions</h4>
+              <div class="geo-status-list">
+                ${rooms
+                  .slice(0, 6)
+                  .map(
+                    (room, index) => `
+                      <article>
+                        <strong>Region ${index + 1}</strong>
+                        <span>${escapeHtml(room.classification || "room_like_space")}</span>
+                        <p>Area share: ${escapeHtml(room.area_ratio_of_drawing)}, aspect: ${escapeHtml(room.aspect_ratio)}</p>
+                      </article>
+                    `,
+                  )
+                  .join("")}
+              </div>
+            </div>
+          `
+          : ""
+      }
+
+      ${renderListSection("Detection limits", data.interpretation_notes)}
+    `,
+    {
+      eyebrow: "Preprocessor",
+      meta: data.method || "local",
+      open: false,
+      className: "floor-plan-analysis",
+    },
+  );
 }
 
 function renderGeoContext(context = {}, assessment = {}) {

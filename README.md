@@ -7,6 +7,7 @@ FlatWise is a local web app that helps Polish buyers evaluate developer flat lis
 - Chat onboarding to collect listing URL, floor plan, and buyer priorities
 - Scrapes developer listing pages for text, images, and JSON-LD addresses
 - Accepts floor plan uploads (PNG, JPG, WebP, PDF) with crop and normalization
+- Local floor-plan geometry preprocessing: estimates room-like regions, elongated spaces, wall-line density, and detection limits before LLM analysis
 - OpenRouter analysis: layout, location, price metrics, geoportal assessment, due diligence steps
 - Vision support when the configured OpenRouter model accepts images
 - Geoportal integration: geocoding (UUG), parcel lookup (ULDK), WMS layers (MPZP, BDOT, GESUT, EGiB), orthophoto map preview
@@ -47,10 +48,15 @@ Requires Python 3.10 or newer.
 | `APP_NAME` | App title sent to OpenRouter |
 | `REQUEST_TIMEOUT_SECONDS` | Listing fetch timeout |
 | `MAX_UPLOAD_BYTES` | Max floor-plan upload size |
+| `MAX_IMAGE_PIXELS` | Max decoded image resolution for floor-plan uploads |
+| `MAX_PDF_PAGES` | Max PDF pages inspected/rendered for floor-plan extraction |
+| `ALLOW_PRIVATE_LISTING_URLS` | Allow listing URLs that resolve to private/local networks; keep `false` unless developing locally against a private host |
+| `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API |
 
 ## Known limits
 
 - Some developer sites block scraping or render content client-side only.
 - PDF floor plans: text extraction plus rendered page crop; image-heavy PDFs work best as image uploads.
+- Floor-plan preprocessing is heuristic and local; it is not a certified measurement engine and does not yet use CubiCasa5K pretrained weights.
 - Location quality depends on address visibility in the listing or notes.
 - RCN transactional price data is not integrated in this MVP.

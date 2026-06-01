@@ -1,7 +1,11 @@
+import asyncio
 import base64
+import ipaddress
 import json
 import mimetypes
 import re
+import socket
+import ssl
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -9,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 import fitz
+import truststore
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,11 +54,12 @@ GEOPORTAL_SERVICES = {
 }
 EPSG2180_TO_WGS84 = Transformer.from_crs("EPSG:2180", "EPSG:4326", always_xy=True)
 WGS84_TO_EPSG2180 = Transformer.from_crs("EPSG:4326", "EPSG:2180", always_xy=True)
+HTTPX_VERIFY = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 app = FastAPI(title="FlatWise MVP")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,6 +90,8 @@ async def analyze_flat(
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(status_code=400, detail="Podaj poprawny adres URL zaczynający się od http(s).")
 
+    validate_listing_url(parsed)
+
     openrouter_api_key = sanitize_openrouter_api_key(settings.openrouter_api_key)
     if not openrouter_api_key:
         raise HTTPException(
@@ -102,7 +110,13 @@ async def analyze_flat(
     geo_context = await create_geo_context(listing, notes, openrouter_api_key)
 
     report = await create_openrouter_report(url, listing, notes, uploaded_file, geo_context, openrouter_api_key)
-    return {"listing": listing, "report": report, "visualization": visualization, "geo_context": geo_context}
+    return {
+        "listing": listing,
+        "report": report,
+        "visualization": visualization,
+        "geo_context": geo_context,
+        "floor_plan_analysis": uploaded_file.get("floor_plan_analysis") if uploaded_file else None,
+    }
 
 
 async def extract_listing(url: str) -> dict[str, Any]:
@@ -119,6 +133,7 @@ async def extract_listing(url: str) -> dict[str, Any]:
             follow_redirects=True,
             timeout=settings.request_timeout_seconds,
             headers=headers,
+            verify=HTTPX_VERIFY,
         ) as client:
             response = await client.get(url)
             response.raise_for_status()
@@ -232,6 +247,7 @@ async def read_uploaded_file(upload: UploadFile | None) -> dict[str, Any] | None
         result["floor_plan_image_source"] = image["source"]
         result["floor_plan_image_name"] = image["name"]
         result["floor_plan_image_size_bytes"] = len(image["data"])
+        result["floor_plan_analysis"] = analyze_floor_plan_geometry(image["data"])
     elif content_type == "application/pdf" or (upload.filename or "").lower().endswith(".pdf"):
         pdf_result = extract_pdf_content(content)
         result.update(pdf_result)
@@ -247,7 +263,15 @@ async def read_uploaded_file(upload: UploadFile | None) -> dict[str, Any] | None
 def prepare_uploaded_plan_image(content: bytes) -> dict[str, Any]:
     try:
         image = Image.open(BytesIO(content))
+        width, height = image.size
+        if width * height > settings.max_image_pixels:
+            raise HTTPException(
+                status_code=413,
+                detail="Obraz rzutu ma zbyt duza rozdzielczosc.",
+            )
         image = ImageOps.exif_transpose(image).convert("RGB")
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Nie udało się odczytać przesłanego obrazu rzutu.") from exc
 
@@ -268,7 +292,7 @@ def extract_pdf_content(content: bytes) -> dict[str, Any]:
         return {"pdf_text": "", "floor_plan_image_error": "Nie udało się odczytać PDF."}
 
     pages = []
-    for page in reader.pages[:6]:
+    for page in reader.pages[: settings.max_pdf_pages]:
         pages.append(page.extract_text() or "")
 
     result: dict[str, Any] = {"pdf_text": clean_text("\n".join(pages))[:8000]}
@@ -283,6 +307,7 @@ def extract_pdf_content(content: bytes) -> dict[str, Any]:
                 "floor_plan_image_name": image["name"],
                 "floor_plan_image_page": image["page"],
                 "floor_plan_image_size_bytes": len(image["data"]),
+                "floor_plan_analysis": analyze_floor_plan_geometry(image["data"]),
             }
         )
     else:
@@ -295,7 +320,7 @@ def extract_pdf_text(content: bytes) -> str:
     try:
         reader = PdfReader(BytesIO(content))
         pages = []
-        for page in reader.pages[:6]:
+        for page in reader.pages[: settings.max_pdf_pages]:
             pages.append(page.extract_text() or "")
         return clean_text("\n".join(pages))[:8000]
     except Exception:
@@ -304,7 +329,7 @@ def extract_pdf_text(content: bytes) -> str:
 
 def extract_likely_floor_plan_image(reader: PdfReader) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None
-    for page_index, page in enumerate(reader.pages[:6], start=1):
+    for page_index, page in enumerate(reader.pages[: settings.max_pdf_pages], start=1):
         try:
             page_images = list(getattr(page, "images", []) or [])
         except Exception:
@@ -339,7 +364,7 @@ def render_likely_floor_plan_page(content: bytes) -> dict[str, Any] | None:
         return None
 
     best: dict[str, Any] | None = None
-    for page_index in range(min(document.page_count, 6)):
+    for page_index in range(min(document.page_count, settings.max_pdf_pages)):
         page = document.load_page(page_index)
         text = clean_text(page.get_text("text") or "")
         pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
@@ -495,11 +520,297 @@ def image_to_png_bytes(image: Image.Image) -> bytes:
     return output.getvalue()
 
 
+def analyze_floor_plan_geometry(content: bytes) -> dict[str, Any]:
+    try:
+        image = Image.open(BytesIO(content)).convert("RGB")
+    except Exception:
+        return {
+            "status": "error",
+            "method": "local_floor_plan_geometry_v1",
+            "summary": "Could not decode the normalized floor-plan image.",
+        }
+
+    original_width, original_height = image.size
+    analysis_image = image.copy()
+    analysis_image.thumbnail((900, 900), Image.Resampling.LANCZOS)
+    grayscale = ImageOps.grayscale(analysis_image)
+    threshold = estimate_plan_threshold(grayscale)
+    ink_mask = grayscale.point(lambda pixel: 255 if pixel < threshold else 0, mode="L")
+    ink_mask = ink_mask.filter(ImageFilter.MaxFilter(5))
+    bbox = ink_mask.getbbox() or (0, 0, grayscale.width, grayscale.height)
+    bbox_area = max((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]), 1)
+    ink_pixels = count_mask_pixels(ink_mask, bbox)
+    room_candidates = find_room_like_components(ink_mask, bbox)
+    room_count = len(room_candidates)
+    elongated_count = sum(1 for component in room_candidates if component["classification"] == "elongated_space")
+    line_summary = summarize_wall_runs(ink_mask, bbox)
+
+    return {
+        "status": "ready",
+        "method": "local_floor_plan_geometry_v1",
+        "source": "heuristic_preprocessor_not_cubicasa_weights",
+        "image": {
+            "width": original_width,
+            "height": original_height,
+            "analysis_width": grayscale.width,
+            "analysis_height": grayscale.height,
+        },
+        "drawing_bbox": normalize_bbox(bbox, grayscale.size),
+        "ink_ratio": round(ink_pixels / bbox_area, 4),
+        "estimated_room_like_spaces": room_count,
+        "elongated_space_count": elongated_count,
+        "wall_run_summary": line_summary,
+        "room_candidates": room_candidates[:12],
+        "interpretation_notes": [
+            "Use as weak structured evidence, not as measured architectural truth.",
+            "Room candidates are enclosed or mostly enclosed light regions after thickening dark plan lines.",
+            "Door gaps, furniture, labels, low-contrast scans, and decorative plan graphics can merge or split rooms.",
+            "Precise dimensions, wall types, and legal usable area still require the developer plan or manual verification.",
+        ],
+    }
+
+
+def count_mask_pixels(mask: Image.Image, bbox: tuple[int, int, int, int]) -> int:
+    pixels = mask.load()
+    left, top, right, bottom = bbox
+    count = 0
+    for y in range(top, bottom):
+        for x in range(left, right):
+            if pixels[x, y]:
+                count += 1
+    return count
+
+
+def normalize_bbox(
+    bbox: tuple[int, int, int, int],
+    image_size: tuple[int, int],
+) -> dict[str, float]:
+    width, height = image_size
+    left, top, right, bottom = bbox
+    return {
+        "x": round(left / max(width, 1), 4),
+        "y": round(top / max(height, 1), 4),
+        "width": round((right - left) / max(width, 1), 4),
+        "height": round((bottom - top) / max(height, 1), 4),
+    }
+
+
+def find_room_like_components(
+    ink_mask: Image.Image,
+    bbox: tuple[int, int, int, int],
+) -> list[dict[str, Any]]:
+    width, height = ink_mask.size
+    left, top, right, bottom = bbox
+    bbox_width = max(right - left, 1)
+    bbox_height = max(bottom - top, 1)
+    bbox_area = bbox_width * bbox_height
+    min_area = max(80, int(bbox_area * 0.006))
+    max_area = int(bbox_area * 0.72)
+    data = ink_mask.tobytes()
+    visited = bytearray(width * height)
+    components: list[dict[str, Any]] = []
+
+    for y in range(top, bottom):
+        row_offset = y * width
+        for x in range(left, right):
+            index = row_offset + x
+            if visited[index] or data[index] != 0:
+                continue
+
+            component = flood_light_component(data, visited, width, height, index, bbox)
+            if not component:
+                continue
+            if component["touches_bbox"]:
+                continue
+            if component["area"] < min_area or component["area"] > max_area:
+                continue
+
+            component_width = max(component["right"] - component["left"] + 1, 1)
+            component_height = max(component["bottom"] - component["top"] + 1, 1)
+            if component_width < 12 or component_height < 12:
+                continue
+
+            aspect_ratio = component_width / component_height
+            classification = "elongated_space" if aspect_ratio >= 3.0 or aspect_ratio <= 0.33 else "room_like_space"
+            components.append(
+                {
+                    "bbox": normalize_bbox(
+                        (
+                            component["left"],
+                            component["top"],
+                            component["right"] + 1,
+                            component["bottom"] + 1,
+                        ),
+                        ink_mask.size,
+                    ),
+                    "area_ratio_of_drawing": round(component["area"] / bbox_area, 4),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "classification": classification,
+                }
+            )
+
+    components.sort(key=lambda item: item["area_ratio_of_drawing"], reverse=True)
+    return components
+
+
+def flood_light_component(
+    data: bytes,
+    visited: bytearray,
+    width: int,
+    height: int,
+    start_index: int,
+    bbox: tuple[int, int, int, int],
+) -> dict[str, Any] | None:
+    left, top, right, bottom = bbox
+    stack = [start_index]
+    visited[start_index] = 1
+    min_x = max_x = start_index % width
+    min_y = max_y = start_index // width
+    area = 0
+    touches_bbox = False
+
+    while stack:
+        index = stack.pop()
+        x = index % width
+        y = index // width
+        area += 1
+        min_x = min(min_x, x)
+        max_x = max(max_x, x)
+        min_y = min(min_y, y)
+        max_y = max(max_y, y)
+        if x <= left + 1 or x >= right - 2 or y <= top + 1 or y >= bottom - 2:
+            touches_bbox = True
+
+        neighbors = []
+        if x > left:
+            neighbors.append(index - 1)
+        if x < right - 1:
+            neighbors.append(index + 1)
+        if y > top:
+            neighbors.append(index - width)
+        if y < bottom - 1:
+            neighbors.append(index + width)
+
+        for next_index in neighbors:
+            if visited[next_index] or data[next_index] != 0:
+                continue
+            visited[next_index] = 1
+            stack.append(next_index)
+
+    return {
+        "area": area,
+        "left": min_x,
+        "top": min_y,
+        "right": max_x,
+        "bottom": max_y,
+        "touches_bbox": touches_bbox,
+    }
+
+
+def summarize_wall_runs(mask: Image.Image, bbox: tuple[int, int, int, int]) -> dict[str, Any]:
+    left, top, right, bottom = bbox
+    pixels = mask.load()
+    horizontal = collect_dark_runs(pixels, left, top, right, bottom, axis="horizontal")
+    vertical = collect_dark_runs(pixels, left, top, right, bottom, axis="vertical")
+    return {
+        "horizontal_long_runs": len(horizontal),
+        "vertical_long_runs": len(vertical),
+        "longest_horizontal_ratio": round(max(horizontal, default=0) / max(right - left, 1), 3),
+        "longest_vertical_ratio": round(max(vertical, default=0) / max(bottom - top, 1), 3),
+    }
+
+
+def collect_dark_runs(
+    pixels: Any,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    axis: str,
+) -> list[int]:
+    lengths: list[int] = []
+    if axis == "horizontal":
+        minimum = max(20, int((right - left) * 0.12))
+        for y in range(top, bottom):
+            run = 0
+            for x in range(left, right):
+                if pixels[x, y]:
+                    run += 1
+                elif run:
+                    if run >= minimum:
+                        lengths.append(run)
+                    run = 0
+            if run >= minimum:
+                lengths.append(run)
+        return lengths
+
+    minimum = max(20, int((bottom - top) * 0.12))
+    for x in range(left, right):
+        run = 0
+        for y in range(top, bottom):
+            if pixels[x, y]:
+                run += 1
+            elif run:
+                if run >= minimum:
+                    lengths.append(run)
+                run = 0
+        if run >= minimum:
+            lengths.append(run)
+    return lengths
+
+
 def image_mime_type(filename: str) -> str:
     guessed, _ = mimetypes.guess_type(filename)
     if guessed and guessed.startswith("image/"):
         return guessed
     return "image/png"
+
+
+def validate_listing_url(parsed: Any) -> None:
+    if settings.allow_private_listing_urls:
+        return
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Adres oferty nie zawiera poprawnej domeny.")
+
+    if hostname.lower() in {"localhost", "localhost.localdomain"}:
+        raise HTTPException(status_code=400, detail="Adres oferty nie moze wskazywac na localhost.")
+
+    try:
+        ip_address = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip_address = None
+
+    if ip_address:
+        if is_private_network_address(ip_address):
+            raise HTTPException(status_code=400, detail="Adres oferty wskazuje na siec prywatna lub lokalna.")
+        return
+
+    try:
+        addresses = socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="Nie udalo sie zweryfikowac domeny oferty.") from exc
+
+    for address_info in addresses:
+        ip_value = address_info[4][0]
+        try:
+            ip_address = ipaddress.ip_address(ip_value)
+        except ValueError:
+            continue
+        if is_private_network_address(ip_address):
+            raise HTTPException(status_code=400, detail="Domena oferty wskazuje na siec prywatna lub lokalna.")
+
+
+def is_private_network_address(ip_address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip_address.is_private
+        or ip_address.is_loopback
+        or ip_address.is_link_local
+        or ip_address.is_multicast
+        or ip_address.is_reserved
+        or ip_address.is_unspecified
+    )
 
 
 async def create_geo_context(
@@ -574,7 +885,21 @@ async def create_geo_context(
         }
     )
 
-    parcel = await lookup_parcel_by_xy(x, y)
+    (
+        parcel,
+        kimp_result,
+        kiskzp_result,
+        bdot_result,
+        gesut_result,
+        egib_result,
+    ) = await asyncio.gather(
+        lookup_parcel_by_xy(x, y),
+        query_wms_feature_info("KIMP MPZP", GEOPORTAL_SERVICES["kimp"], ["plany", "granice"], x, y),
+        query_wms_feature_info("KISKZP studium", GEOPORTAL_SERVICES["kiskzp"], ["studium", "granice"], x, y),
+        query_wms_feature_info("BDOT", GEOPORTAL_SERVICES["bdot"], ["bdot10k", "bdot500"], x, y),
+        query_wms_feature_info("GESUT", GEOPORTAL_SERVICES["gesut"], ["gesut"], x, y),
+        query_wms_feature_info("EGiB", GEOPORTAL_SERVICES["egib"], ["dzialki", "budynki"], x, y),
+    )
     context["parcel"] = parcel
     context["service_status"].append(
         {
@@ -584,14 +909,11 @@ async def create_geo_context(
         }
     )
 
-    planning = [
-        await query_wms_feature_info("KIMP MPZP", GEOPORTAL_SERVICES["kimp"], ["plany", "granice"], x, y),
-        await query_wms_feature_info("KISKZP studium", GEOPORTAL_SERVICES["kiskzp"], ["studium", "granice"], x, y),
-    ]
+    planning = [kimp_result, kiskzp_result]
     context["planning_context"] = planning
 
     physical = [
-        await query_wms_feature_info("BDOT", GEOPORTAL_SERVICES["bdot"], ["bdot10k", "bdot500"], x, y),
+        bdot_result,
         {
             "service": "ORTO",
             "status": "queried_for_map",
@@ -607,8 +929,8 @@ async def create_geo_context(
     context["physical_context"] = physical
 
     infrastructure = [
-        await query_wms_feature_info("GESUT", GEOPORTAL_SERVICES["gesut"], ["gesut"], x, y),
-        await query_wms_feature_info("EGiB", GEOPORTAL_SERVICES["egib"], ["dzialki", "budynki"], x, y),
+        gesut_result,
+        egib_result,
         {
             "service": "Drogi i transport publiczny",
             "status": "not_configured",
@@ -782,7 +1104,7 @@ Dane oferty:
 
 
 async def geocode_address_candidates(candidates: list[str]) -> dict[str, Any] | None:
-    async with httpx.AsyncClient(timeout=12) as client:
+    async with httpx.AsyncClient(timeout=12, verify=HTTPX_VERIFY) as client:
         for candidate in candidates:
             google_result = await geocode_with_google_maps(client, candidate)
             if google_result:
@@ -904,7 +1226,7 @@ async def lookup_parcel_by_xy(x: float, y: float) -> dict[str, Any] | None:
         "result": "id,numer,wojewodztwo,powiat,gmina,obreb,geom_wkt",
     }
     try:
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=12, verify=HTTPX_VERIFY) as client:
             response = await client.get(GEOPORTAL_SERVICES["uldk"], params=params)
             response.raise_for_status()
     except Exception:
@@ -957,7 +1279,7 @@ async def query_wms_feature_info(
         "info_format": "application/json",
     }
     try:
-        async with httpx.AsyncClient(timeout=14) as client:
+        async with httpx.AsyncClient(timeout=14, verify=HTTPX_VERIFY) as client:
             response = await client.get(service_url, params=params)
         if response.status_code >= 400:
             return {
@@ -1039,7 +1361,7 @@ async def create_geoportal_map_image(x: float, y: float, parcel_wkt: str | None)
     try:
         image = None
         for _ in range(4):
-            async with httpx.AsyncClient(timeout=18) as client:
+            async with httpx.AsyncClient(timeout=18, verify=HTTPX_VERIFY) as client:
                 response = await client.get(GEOPORTAL_SERVICES["orto"], params=params)
             if response.status_code >= 400 or not response.content.startswith(b"\x89PNG"):
                 continue
@@ -1342,7 +1664,7 @@ async def call_nanobanana_via_openrouter(
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=90, verify=HTTPX_VERIFY) as client:
         response = await client.post(url, headers=headers, json=payload)
 
     if response.status_code >= 400:
@@ -1373,7 +1695,7 @@ async def post_openrouter_chat_completion(
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60, verify=HTTPX_VERIFY) as client:
         response = await client.post(url, headers=headers, json=payload)
         if response.status_code >= 400 and "response_format" in payload:
             fallback_payload = dict(payload)
@@ -1404,6 +1726,7 @@ def build_prompt(
 ) -> str:
     uploaded_summary = "Nie dodano rzutu mieszkania."
     if uploaded_file:
+        floor_plan_analysis = uploaded_file.get("floor_plan_analysis")
         if uploaded_file.get("image_data_url"):
             uploaded_summary = (
                 f"Użytkownik dodał rzut mieszkania jako obraz: {uploaded_file.get('filename')}."
@@ -1421,6 +1744,13 @@ def build_prompt(
             uploaded_summary = (
                 f"Użytkownik dodał {uploaded_file.get('filename')}, ale nie udało się odczytać treści."
             )
+
+    if uploaded_file and floor_plan_analysis:
+        uploaded_summary += (
+            "\n\nStructured floor-plan preprocessing JSON "
+            "(local heuristic parser, not certified measurements and not CubiCasa weights):\n"
+            f"{json.dumps(floor_plan_analysis, ensure_ascii=False, indent=2)}"
+        )
 
     return f"""
 Przeanalizuj tę polską ofertę mieszkania od dewelopera dla osoby kupującej.
@@ -1495,6 +1825,7 @@ Zasady:
 - Jeśli kontekst Geoportalu ma status ready albo partial, uwzględnij go w location_analysis, source_notes i geoportal_assessment. Jeśli usługa zwróciła pusty wynik albo błąd, nie traktuj tego jako dowodu braku ryzyka.
 - Układ oceniaj na podstawie rzutu, jeśli został dodany. Jeśli go nie ma, jasno opisz ograniczenie analizy.
 - Uwzględnij polskie checklisty kupującego: KW, umowa deweloperska, rachunek powierniczy, koszty parkingu/komórki, hałas, nasłonecznienie, czynsz/opłaty administracyjne, standard wykończenia i planowane inwestycje w okolicy.
+- If structured floor-plan preprocessing JSON is available, use it as weak geometric evidence about possible room-like spaces, elongated/corridor-like spaces, line density, and detection limits. Do not treat it as certified dimensions.
 - W podsumowaniu i sekcji price_metrics_assessment uwzględnij poniższe metryki:
 {PRICE_METRICS_GUIDE}
 """.strip()

@@ -18,6 +18,18 @@ class Settings:
     app_name: str = os.getenv("APP_NAME", "FlatWise")
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "18"))
     max_upload_bytes: int = int(os.getenv("MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
+    max_image_pixels: int = int(os.getenv("MAX_IMAGE_PIXELS", str(24_000_000)))
+    max_pdf_pages: int = int(os.getenv("MAX_PDF_PAGES", "6"))
+    allow_private_listing_urls: bool = os.getenv("ALLOW_PRIVATE_LISTING_URLS", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    cors_origins: list[str] = [
+        origin.strip()
+        for origin in os.getenv("CORS_ORIGINS", app_url).split(",")
+        if origin.strip()
+    ]
 
 
 settings = Settings()
