@@ -307,6 +307,11 @@ input:focus {
   padding: 20px;
 }
 
+.inputs-panel > .button {
+  width: 100%;
+  margin-top: 8px;
+}
+
 .panel-heading {
   margin-bottom: 18px;
 }
@@ -463,6 +468,28 @@ input:focus {
   background: var(--soft);
 }
 
+.visualization-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.visualization-compare figure {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.visualization-compare img {
+  width: 100%;
+}
+
+.visualization-compare figcaption {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
 .muted-visualization img {
   max-height: 360px;
 }
@@ -617,6 +644,18 @@ input:focus {
 .geo-status-list article {
   display: grid;
   gap: 6px;
+}
+
+.geo-status-list article.selected-option {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
 }
 
 .geo-status-list span {

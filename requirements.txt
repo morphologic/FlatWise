@@ -10,3 +10,4 @@ pillow==11.0.0
 pyproj==3.7.0
 pytest==8.3.4
 truststore==0.10.4
+playwright==1.49.1
