@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FlatWise</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=json-fallback-20260701" />
   </head>
   <body>
     <main class="app-shell">
@@ -62,6 +62,7 @@
               </div>
 
               <dl id="input-summary" class="input-summary"></dl>
+              <button id="floor-plan-button" class="button secondary" type="button" disabled>Analizuj tylko rzut</button>
               <button id="analyze-button" class="button primary" type="button" disabled>Analizuj mieszkanie</button>
               <p id="status-text" class="status-text">Odpowiedz na pytania w czacie, żeby uruchomić analizę.</p>
             </section>
@@ -80,6 +81,6 @@
       </section>
     </main>
 
-    <script type="module" src="/static/app.js"></script>
+    <script type="module" src="/static/app.js?v=json-fallback-20260701"></script>
   </body>
 </html>

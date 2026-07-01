@@ -2,18 +2,34 @@ import os
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 
 class Settings:
     openrouter_api_key: str | None = os.getenv("OPENROUTER_API_KEY")
     openrouter_model: str = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    openrouter_reasoning_model: str = os.getenv(
+        "OPENROUTER_REASONING_MODEL", openrouter_model
+    )
+    openrouter_vision_model: str = os.getenv("OPENROUTER_VISION_MODEL", openrouter_model)
     openrouter_base_url: str = os.getenv(
         "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
     )
     nanobanana_model: str = os.getenv("NANOBANANA_MODEL", "google/gemini-2.5-flash-image")
+    cubicasa5k_command: str | None = os.getenv("CUBICASA5K_COMMAND")
     google_maps_api_key: str | None = os.getenv("GOOGLE_MAPS_API_KEY")
+    osm_nominatim_base_url: str = os.getenv(
+        "OSM_NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"
+    )
+    enable_3d_visualization: bool = os.getenv("ENABLE_3D_VISUALIZATION", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    enable_playwright_gallery_scan: bool = os.getenv(
+        "ENABLE_PLAYWRIGHT_GALLERY_SCAN", "true"
+    ).lower() in {"1", "true", "yes"}
+    playwright_timeout_seconds: float = float(os.getenv("PLAYWRIGHT_TIMEOUT_SECONDS", "18"))
     app_url: str = os.getenv("APP_URL", "http://127.0.0.1:8001")
     app_name: str = os.getenv("APP_NAME", "FlatWise")
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "18"))

@@ -8,6 +8,7 @@ const elements = {
   floorPlanInput: document.querySelector("#floor-plan-input"),
   skipFileButton: document.querySelector("#skip-file-button"),
   inputSummary: document.querySelector("#input-summary"),
+  floorPlanButton: document.querySelector("#floor-plan-button"),
   analyzeButton: document.querySelector("#analyze-button"),
   resetButton: document.querySelector("#reset-button"),
   statusText: document.querySelector("#status-text"),
@@ -22,11 +23,20 @@ const initialState = () => ({
     url: "",
     notes: "",
     floorPlan: null,
+    linkedFloorPlan: null,
     floorPlanSkipped: false,
   },
+  checkingListing: false,
+  analyzingFloorPlan: false,
   analyzing: false,
+  generatingAlternatives: false,
+  comparingLayouts: false,
   ready: false,
   resultsMode: false,
+  currentAnalysis: null,
+  alternatives: [],
+  selectedAlternative: null,
+  comparison: null,
 });
 
 let state = initialState();
@@ -45,11 +55,13 @@ function bindEvents() {
   elements.chatForm.addEventListener("submit", handleChatSubmit);
   elements.floorPlanInput.addEventListener("change", handleFileSelected);
   elements.skipFileButton.addEventListener("click", skipFloorPlan);
+  elements.floorPlanButton.addEventListener("click", analyzeFloorPlanOnly);
   elements.analyzeButton.addEventListener("click", analyzeFlat);
   elements.resetButton.addEventListener("click", resetConversation);
+  elements.reportRoot.addEventListener("click", handleReportAction);
 }
 
-function handleChatSubmit(event) {
+async function handleChatSubmit(event) {
   event.preventDefault();
   const text = elements.chatInput.value.trim();
   if (!text) return;
@@ -58,7 +70,7 @@ function handleChatSubmit(event) {
   elements.chatInput.value = "";
 
   if (state.step === "listing_url") {
-    handleListingAnswer(text);
+    await handleListingAnswer(text);
   } else if (state.step === "floor_plan") {
     handleFloorPlanTextAnswer(text);
   } else if (state.step === "priorities") {
@@ -70,7 +82,7 @@ function handleChatSubmit(event) {
   render();
 }
 
-function handleListingAnswer(text) {
+async function handleListingAnswerLegacy(text) {
   const url = extractUrl(text);
 
   if (!url) {
@@ -90,6 +102,61 @@ function handleListingAnswer(text) {
   );
 }
 
+async function handleListingAnswer(text) {
+  const url = extractUrl(text);
+
+  if (!url) {
+    addBotMessage("Potrzebuje linku zaczynajacego sie od http:// albo https://. Wklej prosze adres oferty.");
+    return;
+  }
+
+  state.inputs.url = url;
+  const possibleNotes = text.replace(url, "").trim();
+  if (possibleNotes.length > 12) {
+    appendNotes(possibleNotes);
+  }
+
+  state.checkingListing = true;
+  state.step = "checking_listing";
+  addBotMessage("Mam link. Sprawdzam, czy strona oferty zawiera rzut mieszkania.");
+  render();
+
+  try {
+    const preview = await fetchListingPreview(url);
+    if (preview.linked_floor_plan) {
+      state.inputs.linkedFloorPlan = preview.linked_floor_plan;
+      state.inputs.floorPlanSkipped = false;
+      addBotMessage("Znalazlem prawdopodobny rzut w ofercie, wiec nie musisz dodawac pliku.");
+      finishFloorPlanStep();
+      return;
+    }
+
+    state.step = "floor_plan";
+    addBotMessage("Nie znalazlem wiarygodnego rzutu w ofercie. Dodaj rzut jako obraz albo PDF, albo kliknij przycisk pomijania.");
+  } catch (error) {
+    state.step = "floor_plan";
+    addBotMessage(`Nie udalo sie sprawdzic rzutu w ofercie: ${error.message}. Dodaj rzut jako plik albo pomin ten krok.`);
+  } finally {
+    state.checkingListing = false;
+    render();
+  }
+}
+
+async function fetchListingPreview(url) {
+  const formData = new FormData();
+  formData.append("url", url);
+
+  const response = await fetch("/api/listing-preview", {
+    method: "POST",
+    body: formData,
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.detail || "Nie udalo sie sprawdzic oferty.");
+  }
+  return payload;
+}
+
 function handleFloorPlanTextAnswer(text) {
   if (isSkipIntent(text)) {
     state.inputs.floorPlanSkipped = true;
@@ -105,6 +172,7 @@ function handleFileSelected(event) {
   if (!file) return;
 
   state.inputs.floorPlan = file;
+  state.inputs.linkedFloorPlan = null;
   state.inputs.floorPlanSkipped = false;
   addUserMessage(`Dodałem rzut: ${file.name}`);
   finishFloorPlanStep();
@@ -113,6 +181,7 @@ function handleFileSelected(event) {
 
 function skipFloorPlan() {
   state.inputs.floorPlan = null;
+  state.inputs.linkedFloorPlan = null;
   state.inputs.floorPlanSkipped = true;
   addUserMessage("Nie mam teraz rzutu mieszkania.");
   finishFloorPlanStep();
@@ -165,7 +234,7 @@ async function analyzeFlat() {
   }
 
   try {
-    const response = await fetch("/api/analyze", {
+    const response = await fetch("/api/current-analysis", {
       method: "POST",
       body: formData,
     });
@@ -176,7 +245,11 @@ async function analyzeFlat() {
     }
 
     addBotMessage("Analiza gotowa. Raport pojawił się po prawej stronie.");
-    renderReport(payload.report, payload.visualization, payload.geo_context, payload.floor_plan_analysis);
+    state.currentAnalysis = payload.current_analysis;
+    state.alternatives = [];
+    state.selectedAlternative = null;
+    state.comparison = null;
+    renderReport(payload.report, payload.visualization, payload.geo_context, payload.floor_plan_analysis, state.currentAnalysis);
     elements.reportPanel.classList.remove("hidden");
   } catch (error) {
     addBotMessage(`Nie udało się wykonać analizy: ${error.message}`);
@@ -185,6 +258,149 @@ async function analyzeFlat() {
   } finally {
     state.analyzing = false;
     render();
+  }
+}
+
+async function analyzeFloorPlanOnly() {
+  if (!state.inputs.url || state.analyzingFloorPlan || state.checkingListing) return;
+
+  state.analyzingFloorPlan = true;
+  state.resultsMode = true;
+  elements.reportPanel.classList.remove("hidden");
+  elements.reportRoot.innerHTML = `
+    <section class="loading-state">
+      <span class="badge">Floor plan</span>
+      <h2>Analizuje tylko rzut mieszkania.</h2>
+      <p>Szukam rzutu w ofercie albo uzywam przeslanego pliku, potem uruchamiam lokalny skan i interpretacje ukladu.</p>
+    </section>
+  `;
+  render();
+
+  const formData = new FormData();
+  formData.append("url", state.inputs.url);
+  formData.append("notes", state.inputs.notes || "");
+  if (state.inputs.floorPlan) {
+    formData.append("floor_plan", state.inputs.floorPlan);
+  }
+
+  try {
+    const response = await fetch("/api/floor-plan-analysis", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Nie udalo sie przeanalizowac rzutu.");
+    }
+    addBotMessage(
+      payload.acquisition?.status === "found"
+        ? "Analiza rzutu jest gotowa."
+        : "Nie znalazlem wiarygodnego rzutu do analizy.",
+    );
+    renderFloorPlanOnlyResult(payload);
+    elements.reportPanel.classList.remove("hidden");
+  } catch (error) {
+    addBotMessage(`Nie udalo sie przeanalizowac rzutu: ${error.message}`);
+    elements.reportPanel.classList.remove("hidden");
+    elements.reportRoot.innerHTML = `<div class="error-box">${escapeHtml(error.message)}</div>`;
+  } finally {
+    state.analyzingFloorPlan = false;
+    render();
+  }
+}
+
+async function handleReportAction(event) {
+  const button = event.target.closest("[data-action]");
+  if (!button) return;
+
+  if (button.dataset.action === "generate-alternatives") {
+    await generateAlternatives();
+    return;
+  }
+
+  if (button.dataset.action === "select-alternative") {
+    const alternative = state.alternatives.find((item) => item.id === button.dataset.id);
+    if (!alternative) return;
+    state.selectedAlternative = alternative;
+    renderWorkflowPanelOnly();
+    return;
+  }
+
+  if (button.dataset.action === "compare-layouts") {
+    await compareSelectedAlternative();
+  }
+}
+
+async function generateAlternatives() {
+  if (!state.currentAnalysis || state.generatingAlternatives) return;
+  state.generatingAlternatives = true;
+  renderWorkflowPanelOnly();
+
+  const formData = new FormData();
+  formData.append("current_analysis_json", JSON.stringify(state.currentAnalysis));
+  formData.append("preferences", state.inputs.notes || "");
+
+  try {
+    const response = await fetch("/api/layout-alternatives", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Nie udalo sie wygenerowac wariantow.");
+    }
+    state.alternatives = payload.alternatives || [];
+    state.selectedAlternative = state.alternatives[0] || null;
+    state.comparison = null;
+    addBotMessage("Warianty ukladu sa gotowe. Wybierz jeden do porownania.");
+  } catch (error) {
+    addBotMessage(`Nie udalo sie wygenerowac wariantow: ${error.message}`);
+  } finally {
+    state.generatingAlternatives = false;
+    renderWorkflowPanelOnly();
+    render();
+  }
+}
+
+async function compareSelectedAlternative() {
+  if (!state.currentAnalysis || !state.selectedAlternative || state.comparingLayouts) return;
+  state.comparingLayouts = true;
+  renderWorkflowPanelOnly();
+
+  const formData = new FormData();
+  formData.append("current_analysis_json", JSON.stringify(state.currentAnalysis));
+  formData.append("selected_alternative_json", JSON.stringify(state.selectedAlternative));
+
+  try {
+    const response = await fetch("/api/compare-layouts", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || "Nie udalo sie porownac ukladow.");
+    }
+    state.comparison = payload;
+    addBotMessage("Porownanie ukladu bazowego z wybranym wariantem jest gotowe.");
+  } catch (error) {
+    addBotMessage(`Nie udalo sie porownac ukladow: ${error.message}`);
+  } finally {
+    state.comparingLayouts = false;
+    renderWorkflowPanelOnly();
+    render();
+  }
+}
+
+function renderWorkflowPanelOnly() {
+  const panel = document.querySelector("#workflow-panel");
+  if (panel) {
+    const container = panel.closest("details") || panel;
+    container.outerHTML = renderWorkflowPanel(
+      state.currentAnalysis,
+      state.alternatives,
+      state.selectedAlternative,
+      state.comparison,
+    );
   }
 }
 
@@ -228,19 +444,24 @@ function renderMessages() {
 function renderStep() {
   const labels = {
     listing_url: "Pytanie 1/3",
+    checking_listing: "Sprawdzam oferte",
     floor_plan: state.inputs.notes.length >= 20 ? "Pytanie 2/2" : "Pytanie 2/3",
     priorities: "Pytanie 3/3",
     ready: "Gotowe",
   };
 
-  elements.stepPill.textContent = state.analyzing ? "Analiza" : labels[state.step] || "Start";
+  elements.stepPill.textContent = state.analyzing || state.analyzingFloorPlan ? "Analiza" : labels[state.step] || "Start";
   elements.fileQuestion.classList.toggle("hidden", state.step !== "floor_plan");
-  elements.chatInput.disabled = state.analyzing;
-  elements.sendButton.disabled = state.analyzing;
-  elements.analyzeButton.disabled = !state.ready || state.analyzing;
+  elements.chatInput.disabled = state.analyzing || state.analyzingFloorPlan || state.checkingListing;
+  elements.sendButton.disabled = state.analyzing || state.analyzingFloorPlan || state.checkingListing;
+  elements.floorPlanButton.disabled = !state.inputs.url || state.analyzing || state.analyzingFloorPlan || state.checkingListing;
+  elements.floorPlanButton.textContent = state.analyzingFloorPlan ? "Analizuje rzut..." : "Analizuj tylko rzut";
+  elements.analyzeButton.disabled = !state.ready || state.analyzing || state.analyzingFloorPlan || state.checkingListing;
   elements.analyzeButton.textContent = state.analyzing ? "Analizuję..." : "Analizuj mieszkanie";
 
-  if (state.step === "floor_plan") {
+  if (state.checkingListing) {
+    elements.chatInput.placeholder = "Sprawdzam obrazy w ofercie...";
+  } else if (state.step === "floor_plan") {
     elements.chatInput.placeholder = "Napisz „nie mam”, jeśli chcesz pominąć rzut...";
   } else if (state.step === "priorities") {
     elements.chatInput.placeholder = "Np. cisza, dobry układ, odsprzedaż, dojazd...";
@@ -267,7 +488,11 @@ function renderInputs() {
     )
     .join("");
 
-  if (state.analyzing) {
+  if (state.checkingListing) {
+    elements.statusText.textContent = "Sprawdzam obrazy z oferty, zeby znalezc rzut mieszkania.";
+  } else if (state.analyzingFloorPlan) {
+    elements.statusText.textContent = "Analizuje tylko rzut mieszkania.";
+  } else if (state.analyzing) {
     elements.statusText.textContent = "Pobieram ofertę i przygotowuję raport. To może potrwać kilkanaście sekund.";
   } else if (state.ready) {
     elements.statusText.textContent = "Dane są gotowe. Możesz uruchomić analizę.";
@@ -276,8 +501,74 @@ function renderInputs() {
   }
 }
 
-function renderReport(report, visualization = {}, geoContext = {}, floorPlanAnalysis = {}) {
+function renderFloorPlanOnlyResult(payload = {}) {
+  const acquisition = payload.acquisition || {};
+  const layoutReview = payload.layout_review || {};
   elements.reportRoot.innerHTML = `
+    ${renderCollapsibleSegment(
+      "Status pozyskania rzutu",
+      `
+        <div class="geo-grid">
+          <div>
+            <h4>Status</h4>
+            <p>${escapeHtml(acquisition.status || "unknown")}</p>
+          </div>
+          <div>
+            <h4>Zrodlo</h4>
+            <p>${escapeHtml(acquisition.source || "none")}</p>
+          </div>
+          <div>
+            <h4>Galeria</h4>
+            <p>${escapeHtml(acquisition.browser_gallery_status?.status || "not_checked")}</p>
+          </div>
+        </div>
+      `,
+      { eyebrow: "Floor plan module", meta: payload.schema_version || "", open: true },
+    )}
+    ${renderSourceFloorPlan({ source_image_data_url: payload.source_image_data_url }, payload.floor_plan_analysis)}
+    ${renderFloorPlanAnalysis(payload.floor_plan_analysis)}
+    ${renderFloorPlanLayoutReview(layoutReview)}
+  `;
+}
+
+function renderFloorPlanLayoutReview(review = {}) {
+  if (!review || !review.status) return "";
+  const detected = review.detected_layout || {};
+  return renderCollapsibleSegment(
+    "Interpretacja ukladu",
+    `
+      <section class="verdict">
+        <span class="badge">${escapeHtml(review.status)}</span>
+        <strong>${escapeHtml(review.summary || "Brak podsumowania.")}</strong>
+        <p>Pewnosc: ${escapeHtml(String(review.confidence ?? "?"))}%</p>
+      </section>
+      <div class="geo-grid">
+        <div>
+          <h4>Pomieszczenia</h4>
+          <p>${escapeHtml((detected.rooms || []).join(", ") || "brak danych")}</p>
+        </div>
+        <div>
+          <h4>Strefy</h4>
+          <p>${escapeHtml((detected.functional_zones || []).join(", ") || "brak danych")}</p>
+        </div>
+        <div>
+          <h4>Komunikacja</h4>
+          <p>${escapeHtml(detected.circulation || "brak danych")}</p>
+        </div>
+      </div>
+      ${renderMiniList("Plusy", review.strengths)}
+      ${renderMiniList("Ryzyka", review.risks)}
+      ${renderMiniList("Ograniczenia remontowe do weryfikacji", review.renovation_constraints)}
+      ${renderMiniList("Braki danych", review.missing_information)}
+    `,
+    { eyebrow: "Vision/layout", meta: `${escapeHtml(String(review.confidence ?? "?"))}%`, open: true },
+  );
+}
+
+function renderReport(report, visualization = {}, geoContext = {}, floorPlanAnalysis = {}, currentAnalysis = null) {
+  elements.reportRoot.innerHTML = `
+    ${renderWorkflowPanel(currentAnalysis, state.alternatives, state.selectedAlternative, state.comparison)}
+    ${renderSourceFloorPlan(visualization, floorPlanAnalysis)}
     ${renderVisualization(visualization)}
     ${renderFloorPlanAnalysis(floorPlanAnalysis)}
 
@@ -292,6 +583,7 @@ function renderReport(report, visualization = {}, geoContext = {}, floorPlanAnal
       `,
       { eyebrow: "Wynik", meta: `${escapeHtml(String(report.confidence ?? "?"))}%`, open: true },
     )}
+    ${renderModelDiagnostics(report)}
 
     ${renderCollapsibleSegment(
       "Oceny cząstkowe",
@@ -306,6 +598,7 @@ function renderReport(report, visualization = {}, geoContext = {}, floorPlanAnal
     )}
 
     ${renderGeoContext(geoContext, report.geoportal_assessment)}
+    ${renderOrientationAnalysis(report.orientation_analysis)}
     ${renderPriceMetrics(report.price_metrics_assessment)}
     ${renderListSection("Fakty z oferty", report.facts_found)}
     ${renderListSection("Ryzyka i deal-breakery", report.deal_breakers)}
@@ -314,8 +607,160 @@ function renderReport(report, visualization = {}, geoContext = {}, floorPlanAnal
     ${renderListSection("Co zmieniłoby rekomendację", report.what_would_change_my_mind)}
     ${renderListSection("Notatki o źródłach", report.source_notes)}
     ${renderInfographics(report, geoContext)}
-    ${report.raw_response ? `<pre>${escapeHtml(report.raw_response)}</pre>` : ""}
   `;
+}
+
+function renderModelDiagnostics(report = {}) {
+  if (!report.raw_response && !report.parse_error) return "";
+
+  return renderCollapsibleSegment(
+    "Diagnostyka odpowiedzi modelu",
+    `
+      ${report.parse_error ? `<p class="error-box">${escapeHtml(report.parse_error)}</p>` : ""}
+      ${report.raw_response ? `<pre>${escapeHtml(report.raw_response)}</pre>` : ""}
+    `,
+    { eyebrow: "JSON", open: true },
+  );
+}
+
+function renderOrientationAnalysis(data = {}) {
+  if (!data || (!data.status && !data.summary)) return "";
+
+  const directions = Array.isArray(data.directions) ? data.directions.join(", ") : "";
+  return renderCollapsibleSegment(
+    "Orientacja mieszkania",
+    `
+      <div class="geo-section">
+        <div class="geo-grid">
+          <div>
+            <h4>Status</h4>
+            <p>${escapeHtml(data.status || "unknown")}</p>
+          </div>
+          <div>
+            <h4>Kierunki</h4>
+            <p>${escapeHtml(directions || "Brak potwierdzenia")}</p>
+          </div>
+          <div>
+            <h4>Pewność</h4>
+            <p>${escapeHtml(String(data.confidence ?? "?"))}%</p>
+          </div>
+          <div>
+            <h4>Północ na rzucie</h4>
+            <p>${escapeHtml(data.north_on_page || "unknown")}</p>
+          </div>
+        </div>
+        <p>${escapeHtml(data.summary || "Brak opisu orientacji.")}</p>
+        ${renderMiniList("Dowody", data.evidence)}
+        ${renderMiniList("Ryzyka", data.risks)}
+        ${renderMiniList("Braki danych", data.missing_information)}
+      </div>
+    `,
+    { eyebrow: "Ekspozycja", meta: data.status || "", open: true },
+  );
+}
+
+function renderSourceFloorPlan(visualization = {}) {
+  if (!visualization.source_image_data_url) return "";
+  return renderCollapsibleSegment(
+    "Rzut zrodlowy",
+    `
+      <div>
+        <figure>
+          <img src="${escapeAttribute(visualization.source_image_data_url)}" alt="Rzut mieszkania uzyty jako zrodlo analizy" />
+          <figcaption>Rzut z oferty lub przeslanego pliku</figcaption>
+        </figure>
+      </div>
+    `,
+    { eyebrow: "Floor plan", open: true, className: "visualization-section muted-visualization" },
+  );
+}
+
+function renderWorkflowPanel(currentAnalysis, alternatives = [], selectedAlternative = null, comparison = null) {
+  if (!currentAnalysis) return "";
+
+  const selectedId = selectedAlternative?.id || "";
+  const alternativesHtml = alternatives.length
+    ? `
+      <div class="geo-status-list">
+        ${alternatives
+          .map(
+            (item) => `
+              <article class="${item.id === selectedId ? "selected-option" : ""}">
+                <strong>${escapeHtml(item.name || item.id || "Wariant")}</strong>
+                <span>${escapeHtml(item.cost_level || "cost unknown")} cost / ${escapeHtml(item.renovation_risk || "risk unknown")} risk</span>
+                <p>${escapeHtml(item.goal || "")}</p>
+                ${renderListSection("Zmiany", item.changes)}
+                ${renderListSection("Ograniczenia", item.constraints)}
+                <button class="button secondary" type="button" data-action="select-alternative" data-id="${escapeAttribute(item.id)}">
+                  Wybierz
+                </button>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    `
+    : `<p>Najpierw wygeneruj warianty ukladu na podstawie obecnej analizy.</p>`;
+
+  const comparisonHtml = comparison
+    ? `
+      <div class="geo-section">
+        <h4>Porownanie</h4>
+        <p>${escapeHtml(comparison.summary || "")}</p>
+        <div class="geo-status-list">
+          ${(comparison.comparison || [])
+            .map(
+              (item) => `
+                <article>
+                  <strong>${escapeHtml(item.criterion || "Kryterium")}</strong>
+                  <span>Wygrywa: ${escapeHtml(item.winner || "unknown")}</span>
+                  <p>Obecnie: ${escapeHtml(item.original || "")}</p>
+                  <p>Wariant: ${escapeHtml(item.alternative || "")}</p>
+                </article>
+              `,
+            )
+            .join("")}
+        </div>
+        ${renderListSection("Do potwierdzenia", comparison.must_verify_before_action)}
+        ${renderListSection("Nastepne kroki", comparison.final_next_steps)}
+      </div>
+    `
+    : "";
+
+  return renderCollapsibleSegment(
+    "Workflow analizy",
+    `
+      <div id="workflow-panel">
+        <div class="geo-grid">
+          <div>
+            <h4>1. Current Analysis</h4>
+            <p>${escapeHtml(currentAnalysis.schema_version || "ready")}</p>
+          </div>
+          <div>
+            <h4>2. Alternatives</h4>
+            <p>${escapeHtml(String(alternatives.length))}</p>
+          </div>
+          <div>
+            <h4>3. Compare</h4>
+            <p>${escapeHtml(comparison ? "gotowe" : "oczekuje")}</p>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button class="button primary" type="button" data-action="generate-alternatives" ${state.generatingAlternatives ? "disabled" : ""}>
+            ${state.generatingAlternatives ? "Generuje..." : "Generate Alternatives"}
+          </button>
+          <button class="button secondary" type="button" data-action="compare-layouts" ${!selectedAlternative || state.comparingLayouts ? "disabled" : ""}>
+            ${state.comparingLayouts ? "Porownuje..." : "Compare Selected"}
+          </button>
+        </div>
+
+        ${alternativesHtml}
+        ${comparisonHtml}
+      </div>
+    `,
+    { eyebrow: "Etapy", meta: currentAnalysis.analysis_id || "", open: true },
+  );
 }
 
 function renderFloorPlanAnalysis(data = {}) {
@@ -323,6 +768,8 @@ function renderFloorPlanAnalysis(data = {}) {
 
   const wallSummary = data.wall_run_summary || {};
   const rooms = data.room_candidates || [];
+  const cubicasa = data.cubicasa5k || {};
+  const cubicasaCounts = cubicasa.raw_counts || {};
   return renderCollapsibleSegment(
     "Structured floor-plan scan",
     `
@@ -338,6 +785,17 @@ function renderFloorPlanAnalysis(data = {}) {
         <div>
           <h4>Ink ratio</h4>
           <p>${escapeHtml(Math.round((Number(data.ink_ratio) || 0) * 1000) / 10)}%</p>
+        </div>
+      </div>
+
+      <div class="geo-section">
+        <h4>CubiCasa5K adapter</h4>
+        <p>${escapeHtml(cubicasa.status || "not_configured")}</p>
+        <div class="buffer-list">
+          <div><strong>${escapeHtml(cubicasaCounts.walls ?? 0)}</strong><span>walls</span></div>
+          <div><strong>${escapeHtml(cubicasaCounts.doors ?? 0)}</strong><span>doors</span></div>
+          <div><strong>${escapeHtml(cubicasaCounts.windows ?? 0)}</strong><span>windows</span></div>
+          <div><strong>${escapeHtml(cubicasaCounts.rooms ?? 0)}</strong><span>rooms</span></div>
         </div>
       </div>
 
@@ -400,6 +858,11 @@ function renderGeoContext(context = {}, assessment = {}) {
     "Kontekst działki i otoczenia",
     `
       ${
+        context.web_map_image_data_url
+          ? `<img class="geo-map" src="${escapeAttribute(context.web_map_image_data_url)}" alt="Mapa pogladowa OpenStreetMap z lokalizacja mieszkania" />`
+          : ""
+      }
+      ${
         context.map_image_data_url
           ? `<img class="geo-map" src="${escapeAttribute(context.map_image_data_url)}" alt="Mapa poglądowa z Geoportalu z lokalizacją mieszkania i buforami analizy" />`
           : ""
@@ -420,10 +883,13 @@ function renderGeoContext(context = {}, assessment = {}) {
         </div>
       </div>
 
+      ${renderMapLinks(context.map_links)}
+      ${renderLocationValidation(context.location_validation)}
       ${renderGeoAssessment(assessment)}
       ${renderGeoSections("Planowanie", context.planning_context)}
       ${renderGeoSections("Otoczenie fizyczne", context.physical_context)}
       ${renderGeoSections("Infrastruktura", context.infrastructure_context)}
+      ${renderWarsawContext(context.warsaw_context)}
       ${renderGeoSections("Rynek", context.market_context ? [context.market_context] : [])}
       ${renderGeoBuffers(context.buffers)}
       ${renderGeoIntersections(context.intersections)}
@@ -453,6 +919,100 @@ function renderGeoAssessment(data = {}) {
       </div>
       ${renderMiniList("Bufory", data.buffers)}
       ${renderMiniList("Status źródeł", data.service_status)}
+    </div>
+  `;
+}
+
+function renderMapLinks(links = {}) {
+  if (!links || (!links.google_maps && !links.openstreetmap)) return "";
+  return `
+    <div class="action-row">
+      ${links.google_maps ? `<a class="button secondary" href="${escapeAttribute(links.google_maps)}" target="_blank" rel="noreferrer">Google Maps</a>` : ""}
+      ${links.openstreetmap ? `<a class="button secondary" href="${escapeAttribute(links.openstreetmap)}" target="_blank" rel="noreferrer">OpenStreetMap</a>` : ""}
+    </div>
+  `;
+}
+
+function renderLocationValidation(data = {}) {
+  if (!data || data.status === "missing") return "";
+  const google = data.google_geocoding || null;
+  const osm = data.osm_geocoding || null;
+  const listing = data.listing_coordinates || null;
+  return `
+    <div class="geo-section">
+      <h4>Walidacja lokalizacji</h4>
+      <div class="geo-status-list">
+        <article>
+          <strong>Wybrane zrodlo</strong>
+          <span>${escapeHtml(data.status || "unknown")}</span>
+          <p>${escapeHtml(data.selected_provider || "Nie ustalono")}</p>
+          ${data.distance_m ? `<p>Roznica mapa/oferta: ${escapeHtml(data.distance_m)} m</p>` : ""}
+        </article>
+        ${
+          listing
+            ? `
+              <article>
+                <strong>Dane z oferty</strong>
+                <span>${listing.exact_address ? "exact" : "partial"}</span>
+                <p>${escapeHtml(listing.address || "")}</p>
+                <p>${escapeHtml(formatLatLon(listing))}</p>
+              </article>
+            `
+            : ""
+        }
+        ${
+          google
+            ? `
+              <article>
+                <strong>Google Maps</strong>
+                <span>${escapeHtml(google.location_type || "checked")}</span>
+                <p>${escapeHtml(google.address || "")}</p>
+                <p>${escapeHtml(formatLatLon(google))}</p>
+                ${google.google_maps_url ? `<a href="${escapeAttribute(google.google_maps_url)}" target="_blank" rel="noreferrer">Otworz w Google Maps</a>` : ""}
+              </article>
+            `
+            : ""
+        }
+        ${
+          osm
+            ? `
+              <article>
+                <strong>OpenStreetMap</strong>
+                <span>${escapeHtml(osm.osm_class || osm.osm_type || "checked")}</span>
+                <p>${escapeHtml(osm.display_address || osm.address || "")}</p>
+                ${osm.geocoder_address && osm.geocoder_address !== (osm.display_address || osm.address) ? `<p>OSM match: ${escapeHtml(osm.geocoder_address)}</p>` : ""}
+                ${osm.approximate ? `<p>Approximate street-level point.</p>` : ""}
+                <p>${escapeHtml(formatLatLon(osm))}</p>
+                ${osm.osm_url ? `<a href="${escapeAttribute(osm.osm_url)}" target="_blank" rel="noreferrer">Otworz w OSM</a>` : ""}
+              </article>
+            `
+            : ""
+        }
+      </div>
+      ${renderMiniList("Ostrzezenia lokalizacji", data.warnings)}
+    </div>
+  `;
+}
+
+function formatLatLon(value = {}) {
+  if (value.lat === undefined || value.lon === undefined || value.lat === null || value.lon === null) return "";
+  return `${value.lat}, ${value.lon}`;
+}
+
+function renderWarsawContext(context = {}) {
+  if (!context || context.status === "not_warsaw") return "";
+  const themes = context.themes || {};
+  const sections = Object.entries(themes)
+    .map(([theme, items]) => renderGeoSections(`Warszawa: ${theme}`, items))
+    .join("");
+  return `
+    <div class="geo-section">
+      <h4>Mapa Warszawy</h4>
+      <p>${escapeHtml(context.summary || "")}</p>
+      ${sections}
+      ${renderGeoSections("Warszawa: halas", context.noise_context ? [context.noise_context] : [])}
+      ${renderGeoSections("Warszawa: planowanie WMS", context.planning_wms_context ? [context.planning_wms_context] : [])}
+      ${renderListSection("Ograniczenia danych Warszawy", context.warnings)}
     </div>
   `;
 }
@@ -594,6 +1154,7 @@ function renderMetricColumn(title, items = []) {
 }
 
 function renderVisualization(visualization = {}) {
+  if (visualization.status === "disabled") return "";
   if (visualization.status === "ready" && visualization.image_data_url) {
     return renderCollapsibleSegment(
       "Wizualizacja rzutu mieszkania",
@@ -838,6 +1399,7 @@ function isSkipIntent(text) {
 
 function formatFloorPlan() {
   if (state.inputs.floorPlan) return state.inputs.floorPlan.name;
+  if (state.inputs.linkedFloorPlan) return "Znaleziono w ofercie";
   if (state.inputs.floorPlanSkipped) return "Pominięto";
   return "Jeszcze nie podano";
 }
